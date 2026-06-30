@@ -15,13 +15,59 @@ Production-style data engineering project that streams retail transactions from 
 ## Architecture
 
 ```text
-retail_data.csv
-  -> Producer (retail_kafka_pipeline.producer_app)
-  -> Avro serialization + schema validation
-  -> Kafka topic: retail_data_topic
-  -> Consumer(s) (retail_kafka_pipeline.consumer_app)
-  -> JSON event output (ready for sink extensions)
+                        +-----------------------------+
+                        |   Confluent Schema Registry |
+                        |   Subject: topic-value      |
+                        +--------------+--------------+
+                                       ^
+                                       | Fetch latest schema
+                                       |
++------------------+         +---------+------------------------------+
+| retail_data.csv  |         | Producer: retail_kafka_pipeline       |
+| (batch source)   +-------->+  .producer_app                         |
++------------------+         | - normalize_record()                   |
+                             | - Avro serialization                   |
+                             | - idempotent publish (acks=all)        |
+                             +----------------+-----------------------+
+                                              |
+                                              | Avro-encoded events
+                                              v
+                             +----------------+-----------------------+
+                             | Confluent Cloud Kafka                  |
+                             | Topic: retail_data_topic               |
+                             +----------------+-----------------------+
+                                              |
+                       +----------------------+----------------------+
+                       |                                             |
+                       v                                             v
+      +----------------+----------------+          +----------------+----------------+
+      | Consumer (G1, latest)           |          | Consumer (G2, earliest)         |
+      | retail_kafka_pipeline.consumer  |          | retail_kafka_pipeline.consumer   |
+      +----------------+----------------+          +----------------+----------------+
+                       |                                             |
+                       +----------------------+----------------------+
+                                              |
+                                              v
+                           JSON logs / downstream sink extension point
 ```
+
+### Component Responsibilities
+
+- Source layer: `retail_data.csv` acts as raw input dataset for producer ingestion.
+- Producer layer: `producer_app.py` validates/normalizes records and publishes Avro events.
+- Contract layer: Schema Registry enforces event compatibility for topic value schema.
+- Transport layer: Kafka topic decouples producers from consumers and enables replay.
+- Consumption layer: `consumer_app.py` reads and deserializes records with configurable groups/offset policies.
+- Serving layer: Consumers print JSON payloads and can be extended to write into a warehouse/lakehouse sink.
+
+### Data Flow (Step-by-Step)
+
+1. Producer reads CSV rows and converts each row into canonical event fields.
+2. Producer fetches the latest schema from Schema Registry subject `retail_data_topic-value`.
+3. Each record is Avro serialized and published to `retail_data_topic` with a string key.
+4. Kafka stores events durably and exposes them to multiple consumer groups.
+5. Consumers deserialize events using the same schema contract and emit JSON output.
+6. Output stream becomes the integration point for sinks like Snowflake, BigQuery, S3, or Delta Lake.
 
 ## Project Structure
 
